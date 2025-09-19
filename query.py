@@ -46,51 +46,70 @@ class CityAgentQuery:
             return None
     
     def search_documents(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for relevant document chunks using vector similarity."""
+        """Search for relevant document chunks using Redis vector similarity search."""
         # Get query embedding
         query_embedding = self.get_embedding(query)
         if query_embedding is None:
             return []
         
         try:
-            # Get all document keys
-            doc_keys = self.redis_client.keys("doc:*")
+            # Convert query embedding to bytes for Redis vector search
+            query_vector = np.array(query_embedding, dtype=np.float32).tobytes()
             
-            if not doc_keys:
+            # Use Redis FT.SEARCH with vector similarity
+            # KNN search syntax: *=>[KNN num @field $param]
+            search_query = f"*=>[KNN {top_k} @embedding $vec]"
+            
+            # Execute vector search
+            results = self.redis_client.execute_command(
+                "FT.SEARCH", 
+                "index2Z",  # index name
+                search_query,
+                "PARAMS", "2", "vec", query_vector,
+                "RETURN", "4", "content", "filename", "page_number", "chunk_id",
+                "DIALECT", "2"
+            )
+            
+            if not results or len(results) < 2:
                 print("❌ No documents found in the database. Please run ingestion first.")
                 return []
             
-            # Calculate similarities (simplified approach)
-            similarities = []
-            for key in doc_keys:
-                try:
-                    doc_data = self.redis_client.hgetall(key)
-                    if b'embedding' in doc_data:
-                        # Embeddings are stored as JSON strings, not binary data
-                        embedding_json = doc_data[b'embedding'].decode()
-                        stored_embedding = np.array(json.loads(embedding_json), dtype=np.float32)
-                        query_emb = np.array(query_embedding, dtype=np.float32)
-                        
-                        # Calculate cosine similarity
-                        similarity = np.dot(query_emb, stored_embedding) / (
-                            np.linalg.norm(query_emb) * np.linalg.norm(stored_embedding)
-                        )
-                        
-                        similarities.append({
-                            'key': key.decode(),
-                            'similarity': similarity,
-                            'content': doc_data[b'content'].decode(),
-                            'filename': doc_data[b'filename'].decode(),
-                            'page_number': int(doc_data[b'page_number']),
-                            'chunk_id': doc_data[b'chunk_id'].decode()
-                        })
-                except Exception as e:
-                    print(f"Error processing document {key.decode()}: {e}")
-                    continue
+            # Parse results
+            total_results = results[0]
+            documents = []
             
-            # Sort by similarity and return top_k
-            similarities.sort(key=lambda x: x['similarity'], reverse=True)
-            return similarities[:top_k]
+            # Results format: [total_count, doc_id1, [field1, value1, field2, value2, ...], doc_id2, [...], ...]
+            for i in range(1, len(results), 2):
+                if i + 1 < len(results):
+                    doc_id = results[i]
+                    doc_fields = results[i + 1]
+                    
+                    # Parse fields into a dictionary
+                    doc_data = {}
+                    for j in range(0, len(doc_fields), 2):
+                        if j + 1 < len(doc_fields):
+                            field_name = doc_fields[j]
+                            field_value = doc_fields[j + 1]
+                            
+                            if isinstance(field_name, bytes):
+                                field_name = field_name.decode()
+                            if isinstance(field_value, bytes) and field_name != 'embedding':
+                                field_value = field_value.decode()
+                            
+                            doc_data[field_name] = field_value
+                    
+                    # Add to results (similarity score is implicit in order)
+                    if 'content' in doc_data:
+                        documents.append({
+                            'key': doc_id.decode() if isinstance(doc_id, bytes) else doc_id,
+                            'content': doc_data.get('content', ''),
+                            'filename': doc_data.get('filename', ''),
+                            'page_number': int(doc_data.get('page_number', 0)),
+                            'chunk_id': doc_data.get('chunk_id', ''),
+                            'similarity': 1.0 - (len(documents) * 0.1)  # Approximate similarity based on rank
+                        })
+            
+            return documents
             
         except Exception as e:
             print(f"Error searching documents: {e}")

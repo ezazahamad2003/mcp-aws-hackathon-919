@@ -1,9 +1,25 @@
-redisvl>=0.2.0
+# Core dependencies
 openai>=1.0.0
-pandas>=2.0.0
-numpy>=1.24.0
 python-dotenv>=1.0.0
+redis>=5.0.0
 PyPDF2>=3.0.0
+numpy>=1.24.0
+
+# Redis Vector Library for proper vector indexing
+redisvl>=0.2.0
+pandas>=2.0.0
 langchain>=0.1.0
 langchain-openai>=0.1.0
 tiktoken>=0.5.0
+
+# LlamaIndex dependencies
+llama-index>=0.9.0
+llama-index-vector-stores-redis>=0.1.0
+llama-index-embeddings-openai>=0.1.0
+llama-index-llms-openai>=0.1.0
+llama-index-readers-file>=0.1.0
+
+# LangGraph and Agent Framework dependencies
+langgraph>=0.0.40
+langchain-community>=0.0.20
+langsmith>=0.0.80

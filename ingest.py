@@ -14,6 +14,7 @@ import redis
 from openai import OpenAI
 import numpy as np
 import json
+from redisvl.index import SearchIndex
 
 # Load environment variables
 load_dotenv()
@@ -88,13 +89,55 @@ class DocumentIngester:
             return None
     
     def create_index(self):
-        """Create a simple key-value storage for documents (simplified approach)."""
+        """Create a proper Redis vector index using redisvl."""
         try:
-            # For this demo, we'll use simple Redis hashes
-            # In production, you'd use Redis Stack's vector search capabilities
-            print("✅ Using Redis hash storage for documents")
+            index_name = "index2Z"
+            
+            schema = {
+                "index": {
+                    "name": index_name,
+                    "prefix": "doc"
+                },
+                "fields": [
+                    {
+                        "name": "chunk_id",
+                        "type": "tag",
+                        "attrs": {"sortable": True}
+                    },
+                    {
+                        "name": "filename",
+                        "type": "tag"
+                    },
+                    {
+                        "name": "page_number",
+                        "type": "numeric",
+                        "attrs": {"sortable": True}
+                    },
+                    {
+                        "name": "content",
+                        "type": "text"
+                    },
+                    {
+                        "name": "embedding",
+                        "type": "vector",
+                        "attrs": {
+                            "dims": 1536,  # OpenAI ada-002 embedding dimension
+                            "distance_metric": "cosine",
+                            "algorithm": "flat",
+                            "datatype": "float32"
+                        }
+                    }
+                ]
+            }
+            
+            # Create the index
+            self.index = SearchIndex.from_dict(schema, redis_url=self.redis_url)
+            self.index.create(overwrite=True, drop=True)
+            print("✅ Created Redis vector index with proper schema")
+            
         except Exception as e:
-            print(f"Error with Redis setup: {e}")
+            print(f"❌ Error creating Redis index: {e}")
+            raise
     
     def ingest_document(self, pdf_path: str) -> bool:
         """Ingest a PDF document into Redis with embeddings."""
@@ -115,25 +158,26 @@ class DocumentIngester:
             
             print(f"📝 Created {len(all_chunks)} text chunks")
             
-            # Generate embeddings and store in Redis
+            # Generate embeddings and store in Redis using the vector index
             filename = Path(pdf_path).name
             for i, chunk in enumerate(all_chunks):
                 try:
                     # Generate embedding
                     embedding = self.generate_embedding(chunk['text'])
+                    if embedding is None:
+                        continue
                     
-                    # Create document data
+                    # Create document data for redisvl
                     doc_data = {
-                        'content': chunk['text'],
-                        'filename': filename,
-                        'page_number': str(chunk['page_number']),
                         'chunk_id': f"{filename}_chunk_{i}",
-                        'embedding': json.dumps(embedding)  # Store as JSON string
+                        'filename': filename,
+                        'page_number': chunk['page_number'],
+                        'content': chunk['text'],
+                        'embedding': np.array(embedding, dtype=np.float32).tobytes()  # Convert to bytes
                     }
                     
-                    # Store in Redis hash
-                    key = f"doc:{filename}_chunk_{i}"
-                    self.redis_client.hset(key, mapping=doc_data)
+                    # Store using redisvl index
+                    self.index.load([doc_data])
                     
                     if i % 10 == 0:  # Progress indicator
                         print(f"  Processed {i+1}/{len(all_chunks)} chunks")
